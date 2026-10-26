@@ -1,0 +1,114 @@
+# Required checks for every pull request into f2b. See FORK.md.
+#
+# Also dispatched by fork-sync.yml on sync/* branches: pull requests opened with
+# the workflow token do not trigger pull_request workflows, and a dispatched run
+# reports the same check names on the same head commit.
+name: Fork guardrails
+
+on:
+  pull_request:
+    branches: [f2b]
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-guardrails-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+      - name: Install gitleaks (pinned by checksum)
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan commits not on upstream
+        run: |
+          git fetch --quiet origin upstream
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose \
+            --log-opts="origin/upstream..$HEAD_SHA" .
+
+  denylist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 0
+      - name: Scan diff, commit messages and pull request text
+        env:
+          DENYLIST: ${{ secrets.FORK_DENYLIST }}
+          EXTRA_TEXT: |
+            ${{ github.event.pull_request.head.ref || github.ref_name }}
+            ${{ github.event.pull_request.title }}
+            ${{ github.event.pull_request.body }}
+        run: |
+          git fetch --quiet origin upstream
+          .github/fork/denylist.sh origin/upstream "$HEAD_SHA"
+
+  promotion-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - name: Head tree equals the reviewed tree
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == sync/* ]]; then
+            echo "Sync branch: a rebase of reviewed patches onto upstream, exempt."
+            exit 0
+          fi
+          want="$(printf '%s\n' "$BODY" | sed -n 's/^Reviewed-tree: *\([0-9a-f]\{40\}\) *$/\1/p' | head -n1)"
+          if [[ -z "$want" ]]; then
+            echo "::error::The pull request body needs a 'Reviewed-tree: <40-hex tree sha>' line."
+            exit 1
+          fi
+          have="$(git rev-parse "$HEAD_SHA^{tree}")"
+          if [[ "$have" != "$want" ]]; then
+            echo "::error::Head tree $have differs from the reviewed tree $want. Promote the reviewed commit unchanged, or have the new tree reviewed."
+            exit 1
+          fi
+          echo "Head tree matches the reviewed tree $want."
+
+  workflow-allowlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - name: Every workflow is on the allowlist
+        run: |
+          set -euo pipefail
+          extra="$(comm -23 <(ls .github/workflows | sort) <(grep -v '^#' .github/fork/workflows.allow | sort))"
+          if [[ -n "$extra" ]]; then
+            while IFS= read -r f; do
+              echo "::error file=.github/workflows/$f::Not on .github/fork/workflows.allow. Delete it in its own commit, or review it and add it to the list."
+            done <<<"$extra"
+            exit 1
+          fi
+          echo "All workflows are on the allowlist."
