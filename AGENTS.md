@@ -1,5 +1,23 @@
 # Agent Guidance
 
+## This is a fork
+
+Read [`FORK.md`](FORK.md) first. Everything in this repository is public: code,
+commit messages, branch names, pull request titles and bodies, issues and workflow
+files.
+
+- Write commit messages and pull request text for upstream readers: conventional
+  commits, describing the change and why it helps ClassroomIO users.
+- Never include anything about the organisation that runs this fork: hostnames,
+  cloud account or resource identifiers, email addresses, people's names, internal
+  ticket numbers or internal context. Do not link to private systems.
+- One self-contained commit per change, on top of `f2b`. Do not merge `upstream`
+  into `f2b`; it is rebased.
+- Do not edit the `upstream` branch, and do not change licence-gated features.
+- Do not add workflows that publish, deploy or need credentials.
+
+The rest of this file is upstream's guidance and applies unchanged.
+
 This document collects implementation rules and workflow conventions for code changes.
 
 ## Writing Code

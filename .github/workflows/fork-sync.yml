@@ -1,0 +1,106 @@
+# Weekly upstream sync. See FORK.md and .github/fork/sync.sh.
+#
+# Opens a pull request for a clean rebase, or an issue naming the patch that no
+# longer applies. Opening pull requests with the workflow token requires the
+# repository setting "Allow GitHub Actions to create and approve pull requests".
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/f2b'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: f2b
+          fetch-depth: 0
+      - name: Restore recorded conflict resolutions
+        uses: actions/cache@v4
+        with:
+          path: .git/rr-cache
+          key: rerere-${{ github.run_id }}
+          restore-keys: rerere-
+      - name: Rebase f2b onto upstream
+        id: sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          .github/fork/sync.sh
+
+      - name: Run checks on the sync branch
+        if: steps.sync.outputs.result == 'clean'
+        env:
+          BRANCH: ${{ steps.sync.outputs.branch }}
+        run: |
+          gh workflow run fork-guardrails.yml --ref "$BRANCH"
+          gh workflow run fork-build.yml --ref "$BRANCH"
+
+      - name: Open pull request
+        if: steps.sync.outputs.result == 'clean'
+        env:
+          BRANCH: ${{ steps.sync.outputs.branch }}
+          NEW: ${{ steps.sync.outputs.upstream_sha }}
+          OLD: ${{ steps.sync.outputs.old_base }}
+          HEAD: ${{ steps.sync.outputs.head }}
+          PATCHES: ${{ steps.sync.outputs.patches }}
+          OLD_F2B: ${{ github.sha }}
+        run: |
+          compare="https://github.com/classroomio/classroomio/compare/${OLD}...${NEW}"
+          body="$(cat <<MD
+          Rebases \`f2b\` (${PATCHES} patches) onto upstream \`${NEW:0:12}\`.
+
+          Upstream changes: ${compare}
+
+          The rebase applied cleanly (recorded resolutions replayed by \`git rerere\`).
+          The guardrail and build checks were dispatched on this branch.
+
+          Do not use the merge button. After review, move \`f2b\` to this head:
+
+          \`\`\`sh
+          git push --force-with-lease=f2b:${OLD_F2B} origin ${HEAD}:refs/heads/f2b
+          \`\`\`
+          MD
+          )"
+          gh pr create --base f2b --head "$BRANCH" \
+            --title "chore(fork): rebase onto upstream ${NEW:0:12}" --body "$body"
+
+      - name: Open issue for conflicts
+        if: steps.sync.outputs.result == 'conflict'
+        env:
+          NEW: ${{ steps.sync.outputs.upstream_sha }}
+          CONFLICTS: ${{ steps.sync.outputs.conflicts }}
+        run: |
+          title="Upstream sync to ${NEW:0:12} needs a manual rebase"
+          if gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' | grep -q .; then
+            echo "Issue already open."
+            exit 0
+          fi
+          body="$(printf 'Rebasing `f2b` onto upstream `%s` stopped at:\n\n%s\n\nRebase by hand, then record the resolution so `git rerere` replays it next time.\n' "${NEW:0:12}" "$CONFLICTS")"
+          gh issue create --title "$title" --body "$body"
+
+      - name: Summary
+        env:
+          RESULT: ${{ steps.sync.outputs.result }}
+          BRANCH: ${{ steps.sync.outputs.branch }}
+        run: |
+          echo "Sync result: ${RESULT} ${BRANCH}" >> "$GITHUB_STEP_SUMMARY"

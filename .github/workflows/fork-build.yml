@@ -1,0 +1,73 @@
+# Build check: upstream's tests and build, and the three images, without
+# publishing anything. See FORK.md. Also dispatched by fork-sync.yml on sync/*
+# branches (see fork-guardrails.yml for why).
+name: Fork build
+
+on:
+  pull_request:
+    branches: [f2b]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: package.json
+          # pnpm is enabled by corepack in the next step, so setup-node cannot cache it yet.
+          package-manager-cache: false
+      - name: Enable pnpm (version from package.json packageManager)
+        run: npm install --global corepack@latest && corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and test utils
+        run: pnpm --filter @cio/utils^... build && pnpm --filter @cio/utils build && pnpm --filter @cio/utils test
+      - name: Dashboard tests
+        run: cp apps/dashboard/.env.example apps/dashboard/.env && pnpm --filter @cio/dashboard test
+      - name: Build dashboard
+        run: pnpm --filter @cio/dashboard^... build && pnpm --filter @cio/dashboard build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=6144"
+      - name: Build API
+        run: pnpm --filter @cio/api^... build && pnpm --filter @cio/api build
+      - name: API tests
+        run: pnpm --filter @cio/api exec vitest run
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, dashboard, jobs]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.HEAD_SHA }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.component }} (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.component }}
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.HEAD_SHA }}
