@@ -7,8 +7,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   playlist: '',
   downloads: [] as string[],
-  ffmpegRun: vi.fn()
+  ffmpegRun: vi.fn(),
+  readFile: vi.fn()
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  mocks.readFile.mockImplementation(actual.readFile);
+  return { ...actual, readFile: mocks.readFile };
+});
 
 vi.mock('@cio/db/queries', () => ({
   getAssetById: vi.fn(async (id: string) => ({ id, hlsAudioKey: `${id}/audio/playlist.m3u8`, durationSeconds: 60 })),
@@ -31,6 +38,7 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 vi.mock('../../utils/storage', () => ({
+  ObjectTooLargeError: class ObjectTooLargeError extends Error {},
   videosBucket: () => 'videos',
   mediaBucket: () => 'media',
   objectExists: vi.fn(async () => true),
@@ -51,7 +59,7 @@ vi.mock('../../utils/ffmpeg', async (importOriginal) => ({
 
 import { UnrecoverableError } from 'bullmq';
 
-import { HLS_MAX_SEGMENTS, processExtractAudio } from './extract-audio';
+import { HLS_MAX_PLAYLIST_BYTES, HLS_MAX_SEGMENTS, processExtractAudio } from './extract-audio';
 
 const ASSET_ID = '11111111-1111-4111-8111-111111111111';
 const payload = {
@@ -69,6 +77,7 @@ describe('extract-audio HLS playlist handling', () => {
   beforeEach(() => {
     mocks.downloads.length = 0;
     mocks.ffmpegRun.mockReset();
+    mocks.readFile.mockClear();
     mocks.ffmpegRun.mockImplementation(async (args: string[]) => {
       await writeFile(args.at(-1) as string, 'mp3');
     });
@@ -172,5 +181,47 @@ describe('extract-audio HLS playlist handling', () => {
     await processExtractAudio(payload);
 
     expect(mocks.ffmpegRun.mock.calls[0]?.[1]).toBe(90_000);
+  });
+
+  it('rejects a playlist over the size cap without reading it', async () => {
+    // Valid apart from its size: padded with comments, which the rewrite drops.
+    const padding = `# ${'x'.repeat(1022)}`;
+    mocks.playlist = playlist(
+      '#EXTINF:6.0,',
+      'seg-00001.ts',
+      ...Array.from({ length: HLS_MAX_PLAYLIST_BYTES / 1024 + 1 }, () => padding)
+    );
+
+    await expect(processExtractAudio(payload)).rejects.toThrow(
+      `HLS playlist is larger than ${HLS_MAX_PLAYLIST_BYTES} bytes`
+    );
+    expect(mocks.downloads).toEqual([payload.storageKey]);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.ffmpegRun).not.toHaveBeenCalled();
+  });
+
+  it('turns an over-cap download into a rejected playlist', async () => {
+    const storage = await import('../../utils/storage');
+    vi.mocked(storage.downloadObjectToTempFile).mockRejectedValueOnce(new storage.ObjectTooLargeError('too large'));
+
+    const error = await processExtractAudio(payload).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect((error as Error).message).toBe(`HLS playlist is larger than ${HLS_MAX_PLAYLIST_BYTES} bytes`);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(mocks.ffmpegRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['segment', (long: string) => `${long}.mp4`],
+    ['tag', (long: string) => `#EXT-X-${long}`]
+  ])('bounds and escapes the rejected %s it quotes', async (_kind, line) => {
+    const long = `"\u001b[31m${'a'.repeat(10_000)}`;
+    mocks.playlist = playlist('#EXTINF:6.0,', line(long));
+
+    const error = (await processExtractAudio(payload).catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(error.message.length).toBeLessThan(200);
+    expect(error.message).not.toMatch(/[\u0000-\u001f]/);
+    expect(error.message).toContain('\\"');
   });
 });

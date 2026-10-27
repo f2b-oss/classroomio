@@ -1,5 +1,5 @@
 import { GetObjectCommand, HeadObjectCommand, NotFound, PutObjectCommand } from '@aws-sdk/client-s3';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,20 +31,68 @@ export async function objectExists(bucket: string, key: string): Promise<boolean
   }
 }
 
-export async function downloadObjectToTempFile(bucket: string, key: string, fileNameHint?: string): Promise<string> {
+/** The object is larger than the caller allows. Raised before or while downloading it. */
+export class ObjectTooLargeError extends Error {
+  constructor(
+    readonly bucket: string,
+    readonly key: string,
+    readonly maxBytes: number
+  ) {
+    super(`S3 object ${bucket}/${key} is larger than ${maxBytes} bytes`);
+    this.name = 'ObjectTooLargeError';
+  }
+}
+
+/** Passes chunks through until more than `maxBytes` have gone by, then fails the stream. */
+function byteLimit(maxBytes: number, onExceeded: () => Error): Transform {
+  let seen = 0;
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      seen += chunk.length;
+      callback(seen > maxBytes ? onExceeded() : null, chunk);
+    }
+  });
+}
+
+/**
+ * With `maxBytes`, an object larger than that fails with `ObjectTooLargeError`:
+ * up front when S3 reports its length, otherwise as soon as the stream passes
+ * the limit. The partial file is removed.
+ */
+export async function downloadObjectToTempFile(
+  bucket: string,
+  key: string,
+  fileNameHint?: string,
+  options: { maxBytes?: number } = {}
+): Promise<string> {
   const dir = path.join(tmpdir(), 'cio-jobs');
   await mkdir(dir, { recursive: true });
 
   const safeName = fileNameHint?.replace(/[^a-zA-Z0-9._-]/g, '_') ?? 'media';
   const localPath = path.join(dir, `${Date.now()}_${process.pid}_${safeName}`);
 
+  const { maxBytes } = options;
   const response = await getS3Client().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  if (maxBytes !== undefined && (response.ContentLength ?? 0) > maxBytes) {
+    (response.Body as Readable | undefined)?.destroy();
+    throw new ObjectTooLargeError(bucket, key, maxBytes);
+  }
   if (!response.Body) {
     throw new Error(`S3 object ${bucket}/${key} returned no body`);
   }
 
   const body = response.Body as Readable;
-  await pipeline(body, createWriteStream(localPath));
+  try {
+    if (maxBytes === undefined) {
+      await pipeline(body, createWriteStream(localPath));
+    } else {
+      const limit = byteLimit(maxBytes, () => new ObjectTooLargeError(bucket, key, maxBytes));
+      await pipeline(body, limit, createWriteStream(localPath));
+    }
+  } catch (error) {
+    await safeUnlink(localPath);
+    throw error;
+  }
 
   return localPath;
 }
