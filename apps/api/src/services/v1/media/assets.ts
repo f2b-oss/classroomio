@@ -10,7 +10,6 @@ import { AppError, ErrorCodes } from '@api/utils/errors';
 const EXTENSION_BY_MIME_TYPE: Record<TPublicApiCreateAsset['mimeType'], string> = {
   'video/mp4': 'mp4',
   'video/quicktime': 'mov',
-  'video/x-msvideo': 'avi',
   'video/x-matroska': 'mkv'
 };
 

@@ -6,6 +6,9 @@ WORKDIR /app
 ENV CI=true
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
+# Outside root's home, so the pnpm that corepack prepares here is the one the
+# runtime user finds instead of a fresh download.
+ENV COREPACK_HOME="/opt/corepack"
 
 RUN corepack enable && corepack prepare pnpm@10.19.0 --activate
 
@@ -31,5 +34,8 @@ ENV NODE_ENV=production \
 
 # classroomio.sh checks this before moving an install onto the bundled SeaweedFS store.
 LABEL com.classroomio.storage.seaweedfs-ready="true"
+
+ENV COREPACK_ENABLE_NETWORK=0
+USER node
 
 ENTRYPOINT ["/app/entrypoint.sh"]

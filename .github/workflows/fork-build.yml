@@ -47,6 +47,8 @@ jobs:
         run: pnpm --filter @cio/api^... build && pnpm --filter @cio/api build
       - name: API tests
         run: pnpm --filter @cio/api exec vitest run
+      - name: Jobs tests
+        run: pnpm --filter @cio/jobs-worker test
 
   image:
     runs-on: ubuntu-latest
@@ -67,7 +69,23 @@ jobs:
           file: docker/Dockerfile.${{ matrix.component }}
           platforms: linux/amd64
           push: false
+          load: true
+          tags: fork-build/${{ matrix.component }}:check
           provenance: false
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ env.HEAD_SHA }}
+      - name: Runs as a non-root user
+        run: |
+          uid="$(docker run --rm --network none --entrypoint id fork-build/${{ matrix.component }}:check -u)"
+          echo "uid $uid"
+          test "$uid" != 0
+      - name: pnpm works offline for the runtime user
+        if: matrix.component == 'api'
+        run: docker run --rm --network none --entrypoint pnpm fork-build/api:check --version
+      - name: api runs database setup and serves as the runtime user
+        if: matrix.component == 'api'
+        run: docker/api/check-startup.sh fork-build/api:check
+      - name: FFmpeg build and media steps
+        if: matrix.component == 'jobs'
+        run: docker/jobs/check-image.sh fork-build/jobs:check

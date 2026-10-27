@@ -1,9 +1,36 @@
+# The worker runs ffprobe and ffmpeg on uploaded media. Debian's ffmpeg carries
+# every decoder and network protocol, so build a release with only the formats
+# the media processors need (see docker/jobs/ffmpeg-configure.sh).
+FROM node:24.22.1-bookworm-slim AS ffmpeg
+
+ARG FFMPEG_VERSION=9.0.2
+ARG FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential ca-certificates curl nasm pkg-config xz-utils \
+       libdav1d-dev libmp3lame-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN curl -fsSLo ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+    && echo "${FFMPEG_SHA256}  ffmpeg.tar.xz" | sha256sum -c - \
+    && tar -xJf ffmpeg.tar.xz --strip-components=1 \
+    && rm ffmpeg.tar.xz
+
+COPY docker/jobs/ffmpeg-configure.sh /usr/local/bin/ffmpeg-configure
+RUN ffmpeg-configure --prefix=/opt/ffmpeg \
+    && make -j"$(nproc)" \
+    && make install
+
 FROM node:24.22.1-bookworm-slim
 
-# ffmpeg is needed for media probe / thumbnail / audio-extract / transcode tasks.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libdav1d6 libmp3lame0 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
+RUN ffmpeg -hide_banner -version && ffprobe -hide_banner -version
 
 WORKDIR /app
 
@@ -32,6 +59,8 @@ RUN pnpm -r --filter @cio/jobs-worker... build
 # Reported in self-hosted usage pings. Set last so a new version doesn't bust the build cache.
 ARG CIO_VERSION=dev
 ENV CIO_VERSION=$CIO_VERSION
+
+USER node
 
 # Run all worker entrypoints by default. Override CMD to scale media / transcribe
 # / maintenance independently.

@@ -11,7 +11,6 @@ import * as z from 'zod';
 const MIME_TYPE_BY_EXTENSION: Record<string, TPublicApiCreateAsset['mimeType']> = {
   '.mp4': 'video/mp4',
   '.mov': 'video/quicktime',
-  '.avi': 'video/x-msvideo',
   '.mkv': 'video/x-matroska'
 };
 

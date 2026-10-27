@@ -86,7 +86,7 @@ async function completeUploadedVideo(orgId: string, actorId: string, assetId: st
 }
 
 /** Extensions `POST /assets` can mint, in the order it accepts them. */
-const SOURCE_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv'] as const;
+const SOURCE_EXTENSIONS = ['mp4', 'mov', 'mkv'] as const;
 
 async function findUploadedObjectKey(assetId: string): Promise<string | null> {
   for (const extension of SOURCE_EXTENSIONS) {

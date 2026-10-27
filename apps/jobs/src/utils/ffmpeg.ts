@@ -17,6 +17,24 @@ export const FFPROBE_BIN = process.env.FFPROBE_PATH ?? 'ffprobe';
 /** Cap subprocess stdout/stderr so a runaway log can't blow up the worker. */
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
+/**
+ * Inputs are user uploads, and container formats such as HLS, DASH and concat
+ * can name further URLs that ffmpeg would otherwise open. Restricting every
+ * invocation to local files stops an upload from making the worker fetch or
+ * read anything it was not handed.
+ */
+const PROTOCOL_ALLOWLIST = ['-protocol_whitelist', 'file'];
+
+/** Full argv for an ffmpeg run: the protocol allowlist, then `args`. */
+export function ffmpegArgs(args: string[]): string[] {
+  return [...PROTOCOL_ALLOWLIST, ...args];
+}
+
+/** Full argv for the JSON probe of `localPath`. */
+export function ffprobeArgs(localPath: string): string[] {
+  return [...PROTOCOL_ALLOWLIST, '-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', localPath];
+}
+
 export interface FfprobeStream {
   codec_type?: 'video' | 'audio' | 'subtitle' | 'data';
   codec_name?: string;
@@ -42,9 +60,8 @@ export interface FfprobeData {
  * `fluent-ffmpeg.ffprobe()` but without the deprecated wrapper.
  */
 export async function ffprobeJson(localPath: string): Promise<FfprobeData> {
-  const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', localPath];
   try {
-    const { stdout } = await execFileAsync(FFPROBE_BIN, args, { maxBuffer: MAX_OUTPUT_BYTES });
+    const { stdout } = await execFileAsync(FFPROBE_BIN, ffprobeArgs(localPath), { maxBuffer: MAX_OUTPUT_BYTES });
     return JSON.parse(stdout) as FfprobeData;
   } catch (error) {
     const err = error as Error & { code?: string };
@@ -65,7 +82,7 @@ export async function ffprobeJson(localPath: string): Promise<FfprobeData> {
  */
 export async function ffmpegRun(args: string[]): Promise<void> {
   try {
-    await execFileAsync(FFMPEG_BIN, args, { maxBuffer: MAX_OUTPUT_BYTES });
+    await execFileAsync(FFMPEG_BIN, ffmpegArgs(args), { maxBuffer: MAX_OUTPUT_BYTES });
   } catch (error) {
     const err = error as Error & { stderr?: string | Buffer; code?: string };
     if (err.code === 'ENOENT') {
@@ -109,7 +126,7 @@ function stderrTail(stderr: string, lines = 4): string {
  * not present in its output.
  */
 export async function ffmpegProbeLuma(filePath: string): Promise<number> {
-  const args = [
+  const args = ffmpegArgs([
     '-hide_banner',
     '-nostats',
     '-i',
@@ -119,7 +136,7 @@ export async function ffmpegProbeLuma(filePath: string): Promise<number> {
     '-f',
     'null',
     '-'
-  ];
+  ]);
   let stderr = '';
   try {
     const result = await execFileAsync(FFMPEG_BIN, args, { maxBuffer: MAX_OUTPUT_BYTES });
