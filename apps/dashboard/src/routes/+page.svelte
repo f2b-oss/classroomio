@@ -7,6 +7,7 @@
   import FrownIcon from '@lucide/svelte/icons/frown';
   import { Empty } from '@cio/ui/custom/empty';
   import { SimpleLogoNav } from '@cio/ui/custom/simple-logo-nav';
+  import { SourceCodeLink } from '$features/ui';
   import { buildOrgLandingPageProps, normalizeLandingPageSettings } from '$features/org/utils/landing-page';
   import { user, profile } from '$lib/utils/store/user';
   import { t } from '$lib/utils/functions/translations';
@@ -77,6 +78,9 @@
   {#if ThemeComponent && landingPageProps}
     <ThemeComponent {...landingPageProps} />
   {/if}
+  <footer class="py-4 text-center">
+    <SourceCodeLink />
+  </footer>
 {:else if hasSetupError}
   <Empty
     title="Something Went Wrong"

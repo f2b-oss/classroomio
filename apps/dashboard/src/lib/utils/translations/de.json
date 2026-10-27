@@ -37,7 +37,9 @@
         "caption": "Ihre Kurse, Lernenden und Einstellungen werden vorbereitet."
       }
     },
-    "back": "Zurück"
+    "back": "Zurück",
+    "source_code": "Quellcode",
+    "source_code_title": "Quellcode (AGPL-3.0)"
   },
   "validations": {
     "generic": {

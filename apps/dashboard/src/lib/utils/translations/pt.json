@@ -37,7 +37,9 @@
         "caption": "Preparando seus cursos, alunos e configurações."
       }
     },
-    "back": "Voltar"
+    "back": "Voltar",
+    "source_code": "Código-fonte",
+    "source_code_title": "Código-fonte (AGPL-3.0)"
   },
   "validations": {
     "generic": {

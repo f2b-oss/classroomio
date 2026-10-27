@@ -37,7 +37,9 @@
         "caption": "Đang chuẩn bị khóa học, học viên và cài đặt của bạn."
       }
     },
-    "back": "Quay lại"
+    "back": "Quay lại",
+    "source_code": "Mã nguồn",
+    "source_code_title": "Mã nguồn (AGPL-3.0)"
   },
   "validations": {
     "generic": {

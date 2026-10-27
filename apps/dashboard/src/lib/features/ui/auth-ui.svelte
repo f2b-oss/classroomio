@@ -14,6 +14,7 @@
   import { preventDefault } from '$lib/utils/functions/svelte';
   import { ROUTE } from '$lib/utils/constants/routes';
   import { BrandWash, MachineTrainingLine } from '@cio/ui/custom/animation';
+  import SourceCodeLink from './source-code-link.svelte';
 
   interface Props {
     isLogin?: boolean;
@@ -166,5 +167,8 @@
         </Card.Footer>
       {/if}
     </Card.Root>
+    <p class="mt-3 text-center">
+      <SourceCodeLink class="ui:bg-background/80 rounded px-2 py-0.5" />
+    </p>
   </div>
 </div>

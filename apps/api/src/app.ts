@@ -45,6 +45,7 @@ import { reportRouter } from '@api/routes/report';
 import rateLimiter from '@api/middlewares/rate-limiter';
 import { secureHeaders } from 'hono/secure-headers';
 import { signupGuard } from '@api/middlewares/signup-guard';
+import { sourceRouter } from '@api/routes/source';
 import { ssoDiscoveryRouter } from '@api/routes/sso/discovery';
 import { unsplashRouter } from '@api/routes/unsplash/unsplash';
 import { v1Router } from '@api/routes/v1';
@@ -112,6 +113,7 @@ export const app = new Hono()
       message: `"Welcome to Classroomio.com API - docs are at ${API_SERVER_URL}/docs"`
     })
   )
+  .route('/source', sourceRouter)
   .use('/api/auth/sign-up/*', signupGuard)
   .on(['POST', 'GET'], '/api/auth/*', async (c) => {
     // Behind the Cloudflare Worker proxy the raw Request URL points at the

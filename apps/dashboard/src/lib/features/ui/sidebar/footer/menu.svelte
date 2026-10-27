@@ -5,6 +5,7 @@
   import * as DropdownMenu from '@cio/ui/base/dropdown-menu';
   import BellPlusIcon from '@lucide/svelte/icons/bell-plus';
   import BookOpenIcon from '@lucide/svelte/icons/book-open';
+  import CodeIcon from '@lucide/svelte/icons/code';
   import BadgeHelpIcon from '@lucide/svelte/icons/badge-help';
   import LogOutIcon from '@lucide/svelte/icons/log-out';
   import MessageSquarePlusIcon from '@lucide/svelte/icons/message-square-plus';
@@ -152,6 +153,20 @@
                 </DropdownMenu.Item>
               </div>
             {/if}
+
+            <DropdownMenu.Item class="m-0">
+              <a
+                href={resolve('/source', {})}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={$t('common.source_code_title')}
+                class="flex w-full items-center gap-2"
+                data-testid="source-code-menu-item"
+              >
+                <CodeIcon size={16} />
+                <p class="text-sm">{$t('common.source_code')}</p>
+              </a>
+            </DropdownMenu.Item>
 
             <DropdownMenu.Separator />
 

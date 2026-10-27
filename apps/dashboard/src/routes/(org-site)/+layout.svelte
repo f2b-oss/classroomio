@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { PageRestricted } from '$features/ui';
+  import { PageRestricted, SourceCodeLink } from '$features/ui';
   import { currentOrg } from '$lib/utils/store/org';
   import { onMount } from 'svelte';
   import { afterNavigate } from '$app/navigation';
@@ -44,4 +44,7 @@
   <PageRestricted />
 {:else}
   {@render children?.()}
+  <footer class="py-4 text-center">
+    <SourceCodeLink />
+  </footer>
 {/if}

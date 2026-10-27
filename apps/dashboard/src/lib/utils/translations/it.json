@@ -462,7 +462,9 @@
       "untitled_lesson": "Lezione senza titolo",
       "format": "Formato"
     },
-    "back": "Indietro"
+    "back": "Indietro",
+    "source_code": "Codice sorgente",
+    "source_code_title": "Codice sorgente (AGPL-3.0)"
   },
   "compliance": {
     "title": "Conformità",
