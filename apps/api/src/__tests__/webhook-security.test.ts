@@ -13,6 +13,7 @@ import {
   signWebhookPayload,
   verifyWebhookSignature
 } from '@cio/core/services/webhook/signature';
+import { parseWebhookAllowedHosts } from '@cio/core/services/webhook/policy';
 import {
   assertWebhookUrlShape,
   isPrivateAddress,
@@ -20,8 +21,22 @@ import {
   WebhookUrlError
 } from '@cio/core/services/webhook/url-guard';
 
-const cloudPolicy = { allowPrivateNetworks: false };
-const selfHostedPolicy = { allowPrivateNetworks: true };
+const cloudPolicy = { allowPrivateNetworks: false, allowedHosts: ['hooks.example.com'] };
+const selfHostedPolicy = { allowPrivateNetworks: true, allowedHosts: ['localhost', '10.0.0.5'] };
+const openUrlGuardPolicy = {
+  allowPrivateNetworks: false,
+  allowedHosts: [
+    'localhost',
+    'app.localhost',
+    'service.internal',
+    '127.0.0.1',
+    '::1',
+    '::ffff:7f00:1',
+    '::ffff:a9fe:a9fe',
+    '169.254.169.254',
+    'example.com'
+  ]
+};
 
 describe('webhook secrets', () => {
   it('round-trips an encrypted secret and never stores plaintext', () => {
@@ -131,8 +146,8 @@ describe('webhook url guard', () => {
     'ftp://example.com/hook',
     'https://user:pass@example.com/hook',
     'not a url'
-  ])('rejects %s in cloud mode', (url) => {
-    expect(() => assertWebhookUrlShape(url, cloudPolicy)).toThrow(WebhookUrlError);
+  ])('rejects %s in cloud mode even when its host is allowed', (url) => {
+    expect(() => assertWebhookUrlShape(url, openUrlGuardPolicy)).toThrow(WebhookUrlError);
   });
 
   it('accepts a public https URL in cloud mode', () => {
@@ -144,6 +159,36 @@ describe('webhook url guard', () => {
     expect(() => assertWebhookUrlShape('http://10.0.0.5/hook', selfHostedPolicy)).not.toThrow();
   });
 
+  it('rejects every URL when no host is allowed', () => {
+    expect(() =>
+      assertWebhookUrlShape('https://hooks.example.com/x', { allowPrivateNetworks: false, allowedHosts: [] })
+    ).toThrow('Payload URL host is not on the allowed list');
+  });
+
+  it('rejects every URL when no host is allowed, even with private networks enabled', () => {
+    expect(() =>
+      assertWebhookUrlShape('https://hooks.example.com/x', { allowPrivateNetworks: true, allowedHosts: [] })
+    ).toThrow('Payload URL host is not on the allowed list');
+    expect(() => assertWebhookUrlShape('http://10.0.0.6/hook', selfHostedPolicy)).toThrow(
+      'Payload URL host is not on the allowed list'
+    );
+  });
+
+  it('accepts an allowed host written with a trailing dot or in upper case', () => {
+    expect(() => assertWebhookUrlShape('https://hooks.example.com./x', cloudPolicy)).not.toThrow();
+    expect(() => assertWebhookUrlShape('https://HOOKS.example.com/x', cloudPolicy)).not.toThrow();
+  });
+
+  it.each([
+    'https://evil.hooks.example.com/x',
+    'https://hooks.example.com.evil.io/x',
+    'https://example.com/x',
+    'https://hooks.example.com../x',
+    'https://hooks-example.com/x'
+  ])('rejects %s when only hooks.example.com is allowed', (url) => {
+    expect(() => assertWebhookUrlShape(url, cloudPolicy)).toThrow('Payload URL host is not on the allowed list');
+  });
+
   it('refuses to resolve a private literal address in cloud mode', async () => {
     await expect(resolveWebhookTarget(new URL('https://10.1.2.3/hook'), cloudPolicy)).rejects.toThrow(WebhookUrlError);
   });
@@ -153,6 +198,18 @@ describe('webhook url guard', () => {
       address: '127.0.0.1',
       family: 4
     });
+  });
+});
+
+describe('webhook allowed hosts setting', () => {
+  it.each([
+    [undefined, []],
+    ['', []],
+    [' , ', []],
+    ['hooks.example.com', ['hooks.example.com']],
+    [' Hooks.Example.com , crm.example.org ,', ['hooks.example.com', 'crm.example.org']]
+  ])('parses %j as %j', (value, expected) => {
+    expect(parseWebhookAllowedHosts(value)).toEqual(expected);
   });
 });
 

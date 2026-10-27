@@ -16,6 +16,22 @@ files.
 - Do not edit the `upstream` branch, and do not change licence-gated features.
 - Do not add workflows that publish, deploy or need credentials.
 
+### Webhook destinations (`WEBHOOK_ALLOWED_HOSTS`)
+
+Outbound webhooks fail closed in this fork. `assertWebhookUrlShape`
+(`packages/core/src/services/webhook/url-guard.ts`) rejects any payload URL whose host is
+not listed in `WEBHOOK_ALLOWED_HOSTS` (read in `policy.ts`: comma-separated, trimmed,
+lowercased). Matching is exact after lowercasing and dropping one trailing `.`; there
+are no wildcards or suffix matches. Unset or empty means no webhook is ever sent, and
+the check applies even when `WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`. It runs when a
+webhook is created or updated and on every delivery, so it also covers test sends and
+endpoints saved before a host was removed. Keep it as the single check: do not add
+host checks elsewhere, and do not add wildcard support.
+
+Delivery always verifies TLS certificates unless `WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`;
+the endpoint's `verifySsl` flag is ignored otherwise. Tests that deliver to a local
+server must set `WEBHOOK_ALLOWED_HOSTS` (see `webhook-delivery.test.ts`).
+
 The rest of this file is upstream's guidance and applies unchanged.
 
 This document collects implementation rules and workflow conventions for code changes.

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.hoisted(() => {
   process.env.PRIVATE_SERVER_KEY = 'unit-test-server-key';
   process.env.PUBLIC_IS_SELFHOSTED = 'false';
+  process.env.WEBHOOK_ALLOWED_HOSTS = 'hooks.example.com,localhost,127.0.0.1,169.254.169.254';
 });
 
 vi.mock('@cio/db/queries/organization', () => ({
@@ -214,7 +215,8 @@ describe('webhook service', () => {
       'https://localhost/hook',
       'https://127.0.0.1/hook',
       'https://169.254.169.254/latest',
-      'http://hooks.example.com/cio'
+      'http://hooks.example.com/cio',
+      'https://crm.example.org/cio'
     ])('rejects the prohibited URL %s with a field error', async (payloadUrl) => {
       await expect(createWebhookService(orgId, 'profile-1', { ...payload, payloadUrl })).rejects.toMatchObject({
         statusCode: 400,

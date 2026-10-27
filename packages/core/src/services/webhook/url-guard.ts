@@ -1,7 +1,11 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
-export type TWebhookUrlPolicy = { allowPrivateNetworks: boolean };
+/**
+ * `allowedHosts` lists the only hostnames webhooks may be sent to, matched exactly (no wildcards).
+ * An empty list rejects every URL.
+ */
+export type TWebhookUrlPolicy = { allowPrivateNetworks: boolean; allowedHosts: string[] };
 
 export class WebhookUrlError extends Error {
   constructor(message: string) {
@@ -135,9 +139,13 @@ export function assertWebhookUrlShape(rawUrl: string, policy: TWebhookUrlPolicy)
     throw new WebhookUrlError('Payload URL must not contain credentials');
   }
 
-  if (policy.allowPrivateNetworks) return parsed;
-
   const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+
+  if (!policy.allowedHosts.includes(hostname.replace(/\.$/, ''))) {
+    throw new WebhookUrlError('Payload URL host is not on the allowed list');
+  }
+
+  if (policy.allowPrivateNetworks) return parsed;
 
   if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_HOSTNAME_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) {
     throw new WebhookUrlError('Payload URL must not point to a local or internal host');
