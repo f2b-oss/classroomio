@@ -10,6 +10,7 @@ import { ZExtractAudioPayload, type TExtractAudioPayload } from '@cio/jobs/paylo
 import {
   downloadObjectToTempFile,
   mediaBucket,
+  ObjectTooLargeError,
   objectExists,
   safeUnlink,
   uploadFileToBucket,
@@ -87,6 +88,25 @@ const HLS_SEGMENT_NAME = /^[A-Za-z0-9._-]+\.ts$/;
 export const HLS_MAX_SEGMENTS = 20_000;
 
 /**
+ * Largest playlist the worker will read. It is read into memory whole, so its
+ * size needs a ceiling of its own. `HLS_MAX_SEGMENTS` entries at about 40 bytes
+ * each is under 1 MiB.
+ */
+export const HLS_MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
+
+/** Longest piece of playlist text quoted in an error message. */
+const HLS_ERROR_QUOTE_CHARS = 120;
+
+/**
+ * Quote playlist text for an error message. The text is the uploader's, and the
+ * message ends up in the logs and on the media job, so it is cut short and
+ * JSON-escaped.
+ */
+function quote(text: string): string {
+  return JSON.stringify(text.slice(0, HLS_ERROR_QUOTE_CHARS));
+}
+
+/**
  * The uploaded playlist is not one we can process. It is the same playlist on
  * every attempt, so this is unrecoverable: BullMQ fails the job without
  * further attempts. The name is BullMQ's, which it matches on.
@@ -135,25 +155,25 @@ export function rewriteHlsPlaylist(
       }
       const tag = trimmed.split(':', 1)[0];
       if (!HLS_ALLOWED_TAGS.has(tag) || /URI\s*=/i.test(trimmed)) {
-        throw new HlsPlaylistRejectedError(`Unsupported HLS playlist tag: ${tag}`);
+        throw new HlsPlaylistRejectedError(`Unsupported HLS playlist tag: ${quote(tag)}`);
       }
       lines.push(trimmed);
       continue;
     }
 
     if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.includes('\\')) {
-      throw new HlsPlaylistRejectedError(`HLS segment must be a relative path: ${trimmed}`);
+      throw new HlsPlaylistRejectedError(`HLS segment must be a relative path: ${quote(trimmed)}`);
     }
     const key = path.posix.normalize(`${prefix}/${trimmed}`);
     if (path.posix.dirname(key) !== prefix) {
-      throw new HlsPlaylistRejectedError(`HLS segment resolves outside the playlist directory: ${trimmed}`);
+      throw new HlsPlaylistRejectedError(`HLS segment resolves outside the playlist directory: ${quote(trimmed)}`);
     }
     const localName = path.posix.basename(key);
     if (!HLS_SEGMENT_NAME.test(localName)) {
-      throw new HlsPlaylistRejectedError(`HLS segment must be an MPEG-TS file name: ${trimmed}`);
+      throw new HlsPlaylistRejectedError(`HLS segment must be an MPEG-TS file name: ${quote(trimmed)}`);
     }
     if (seenKeys.has(key)) {
-      throw new HlsPlaylistRejectedError(`HLS segment listed more than once: ${trimmed}`);
+      throw new HlsPlaylistRejectedError(`HLS segment listed more than once: ${quote(trimmed)}`);
     }
     if (segments.length >= HLS_MAX_SEGMENTS) {
       throw new HlsPlaylistRejectedError(`HLS playlist lists more than ${HLS_MAX_SEGMENTS} segments`);
@@ -174,9 +194,23 @@ async function downloadHlsPlaylistToTempFile(
   bucket: string,
   playlistKey: string
 ): Promise<{ inputPath: string; tempDir: string }> {
-  const downloadedPlaylist = await downloadObjectToTempFile(bucket, playlistKey, 'playlist.m3u8');
-  const rawPlaylist = await readFile(downloadedPlaylist, 'utf-8');
-  await safeUnlink(downloadedPlaylist);
+  const tooLarge = () => new HlsPlaylistRejectedError(`HLS playlist is larger than ${HLS_MAX_PLAYLIST_BYTES} bytes`);
+  const downloadedPlaylist = await downloadObjectToTempFile(bucket, playlistKey, 'playlist.m3u8', {
+    maxBytes: HLS_MAX_PLAYLIST_BYTES
+  }).catch((error: unknown) => {
+    throw error instanceof ObjectTooLargeError ? tooLarge() : error;
+  });
+
+  let rawPlaylist: string;
+  try {
+    // The download is already bounded; check the file itself before reading it into memory.
+    if ((await stat(downloadedPlaylist)).size > HLS_MAX_PLAYLIST_BYTES) {
+      throw tooLarge();
+    }
+    rawPlaylist = await readFile(downloadedPlaylist, 'utf-8');
+  } finally {
+    await safeUnlink(downloadedPlaylist);
+  }
 
   // Validate before creating anything, so a rejected playlist leaves nothing behind.
   const { playlist, segments } = rewriteHlsPlaylist(rawPlaylist, path.posix.dirname(playlistKey));
