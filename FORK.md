@@ -26,6 +26,7 @@ on `f2b` and a link to the corresponding upstream pull request, if one was opene
 | Date | Change | Upstream PR |
 | ---- | ------ | ----------- |
 | 2026-10-27 | Jobs image builds a minimal FFmpeg 9.0.2 (local files only, the codecs the media steps need) instead of Debian's; every ffmpeg/ffprobe call passes `-protocol_whitelist file`; AVI is no longer an accepted video upload type; api, dashboard and jobs images run as `node`. Image checks in `docker/jobs/check-image.sh`. | Not opened |
+| 2026-10-27 | Auth: return 404 over HTTP for SSO provider management and anonymous sign-in and deletion (server-side `auth.api` only), and disable implicit OAuth account linking. Requests whose path does not start with the literal auth base path are rejected. | Not opened |
 
 Repository maintenance commits (this file, `.github/fork/`, the `fork-*` workflows,
 and the removal of upstream's publish, deploy and issue-bot workflows) are not
