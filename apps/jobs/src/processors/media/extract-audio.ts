@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
+import { UnrecoverableError } from 'bullmq';
+
 import { getAssetById, getJobStep, updateMediaJob, upsertJobStep } from '@cio/db/queries';
 import { ZExtractAudioPayload, type TExtractAudioPayload } from '@cio/jobs/payloads/media';
 
@@ -14,11 +16,13 @@ import {
   videosBucket
 } from '../../utils/storage';
 import { errorMessage, throwIfCancelRequested } from '../../utils/cancel';
-import { ffmpegRun } from '../../utils/ffmpeg';
+import { durationScaledTimeoutMs, ffmpegRun } from '../../utils/ffmpeg';
 import { log } from '../../utils/logger';
 
 const STEP_KEY = 'extract-audio';
 const DOMAIN = 'media';
+/** Fixed part of the transcode budget; the rest scales with the asset's duration. */
+const TRANSCODE_TIMEOUT_BASE_MS = 60_000;
 
 interface ExtractAudioResult {
   bucket: string;
@@ -26,24 +30,140 @@ interface ExtractAudioResult {
   fileSizeBytes: number;
 }
 
-function transcodeToMp3(inputPath: string, outputPath: string): Promise<void> {
-  return ffmpegRun([
-    '-y',
-    '-i',
-    inputPath,
-    '-vn',
-    '-acodec',
-    'libmp3lame',
-    '-b:a',
-    '32k',
-    '-ac',
-    '1',
-    '-ar',
-    '16000',
-    '-f',
-    'mp3',
-    outputPath
-  ]);
+function transcodeToMp3(inputPath: string, outputPath: string, timeoutMs: number): Promise<void> {
+  return ffmpegRun(
+    [
+      '-y',
+      '-i',
+      inputPath,
+      '-vn',
+      '-acodec',
+      'libmp3lame',
+      '-b:a',
+      '32k',
+      '-ac',
+      '1',
+      '-ar',
+      '16000',
+      '-f',
+      'mp3',
+      outputPath
+    ],
+    timeoutMs
+  );
+}
+
+/**
+ * Tags the media playlists we produce use (the browser encoder and the
+ * server-side encoder both write MPEG-TS segments, so there is no init
+ * segment). The playlist is written by whoever uploaded the video, so anything
+ * else fails the job, in particular a tag carrying a `URI=` (`EXT-X-MAP`,
+ * `EXT-X-KEY`, ...), which would have ffmpeg open a file the worker never
+ * downloaded.
+ */
+const HLS_ALLOWED_TAGS = new Set([
+  '#EXTM3U',
+  '#EXT-X-VERSION',
+  '#EXT-X-TARGETDURATION',
+  '#EXT-X-MEDIA-SEQUENCE',
+  '#EXT-X-PLAYLIST-TYPE',
+  '#EXT-X-INDEPENDENT-SEGMENTS',
+  '#EXTINF',
+  '#EXT-X-ENDLIST'
+]);
+
+/**
+ * Both encoders name segments `seg-NNNNN.ts` and write nothing but MPEG-TS, so
+ * a segment line is a flat `.ts` file name. Anything else (another playlist,
+ * an mp4, a path) is not something we wrote.
+ */
+const HLS_SEGMENT_NAME = /^[A-Za-z0-9._-]+\.ts$/;
+
+/**
+ * Most segments a playlist may list. Every segment is a sequential GET made
+ * before ffmpeg starts, while the job holds a worker slot, so the count needs
+ * a ceiling of its own. 20 000 six-second segments is over 33 hours of audio.
+ */
+export const HLS_MAX_SEGMENTS = 20_000;
+
+/**
+ * The uploaded playlist is not one we can process. It is the same playlist on
+ * every attempt, so this is unrecoverable: BullMQ fails the job without
+ * further attempts. The name is BullMQ's, which it matches on.
+ */
+export class HlsPlaylistRejectedError extends UnrecoverableError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnrecoverableError';
+  }
+}
+
+export interface HlsSegment {
+  /** Bucket key of the segment object. */
+  key: string;
+  /** File name the rewritten playlist refers to. */
+  localName: string;
+}
+
+/**
+ * Validate an HLS media playlist and rewrite it to refer to local segment
+ * files. Every segment must be a `.ts` object directly under `playlistPrefix`,
+ * so the playlist cannot choose what else the worker reads, and may appear only
+ * once, up to `HLS_MAX_SEGMENTS`, so it cannot choose how much the worker reads.
+ * Throws `HlsPlaylistRejectedError`.
+ */
+export function rewriteHlsPlaylist(
+  rawPlaylist: string,
+  playlistPrefix: string
+): { playlist: string; segments: HlsSegment[] } {
+  const lines: string[] = [];
+  const segments: HlsSegment[] = [];
+  const seenKeys = new Set<string>();
+  const prefix = path.posix.normalize(playlistPrefix);
+
+  for (const line of rawPlaylist.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      lines.push(line);
+      continue;
+    }
+
+    if (trimmed.startsWith('#')) {
+      if (!trimmed.startsWith('#EXT')) {
+        // A plain comment; ffmpeg ignores it, but there is no reason to pass it on.
+        continue;
+      }
+      const tag = trimmed.split(':', 1)[0];
+      if (!HLS_ALLOWED_TAGS.has(tag) || /URI\s*=/i.test(trimmed)) {
+        throw new HlsPlaylistRejectedError(`Unsupported HLS playlist tag: ${tag}`);
+      }
+      lines.push(trimmed);
+      continue;
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.includes('\\')) {
+      throw new HlsPlaylistRejectedError(`HLS segment must be a relative path: ${trimmed}`);
+    }
+    const key = path.posix.normalize(`${prefix}/${trimmed}`);
+    if (path.posix.dirname(key) !== prefix) {
+      throw new HlsPlaylistRejectedError(`HLS segment resolves outside the playlist directory: ${trimmed}`);
+    }
+    const localName = path.posix.basename(key);
+    if (!HLS_SEGMENT_NAME.test(localName)) {
+      throw new HlsPlaylistRejectedError(`HLS segment must be an MPEG-TS file name: ${trimmed}`);
+    }
+    if (seenKeys.has(key)) {
+      throw new HlsPlaylistRejectedError(`HLS segment listed more than once: ${trimmed}`);
+    }
+    if (segments.length >= HLS_MAX_SEGMENTS) {
+      throw new HlsPlaylistRejectedError(`HLS playlist lists more than ${HLS_MAX_SEGMENTS} segments`);
+    }
+    seenKeys.add(key);
+    segments.push({ key, localName });
+    lines.push(localName);
+  }
+
+  return { playlist: lines.join('\n'), segments };
 }
 
 /**
@@ -58,28 +178,24 @@ async function downloadHlsPlaylistToTempFile(
   const rawPlaylist = await readFile(downloadedPlaylist, 'utf-8');
   await safeUnlink(downloadedPlaylist);
 
+  // Validate before creating anything, so a rejected playlist leaves nothing behind.
+  const { playlist, segments } = rewriteHlsPlaylist(rawPlaylist, path.posix.dirname(playlistKey));
+
   const tempDir = path.join(tmpdir(), 'cio-jobs', 'hls-audio', `${Date.now()}_${process.pid}`);
   await mkdir(tempDir, { recursive: true });
 
-  const playlistPrefix = path.posix.dirname(playlistKey);
-  const localLines: string[] = [];
-
-  for (const line of rawPlaylist.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      localLines.push(line);
-      continue;
+  try {
+    for (const segment of segments) {
+      const downloadedSegment = await downloadObjectToTempFile(bucket, segment.key, segment.localName);
+      await rename(downloadedSegment, path.join(tempDir, segment.localName));
     }
-
-    const segmentKey = trimmed.includes('/') ? trimmed : `${playlistPrefix}/${trimmed}`;
-    const localSegmentPath = path.join(tempDir, path.basename(trimmed));
-    const downloadedSegment = await downloadObjectToTempFile(bucket, segmentKey, path.basename(trimmed));
-    await rename(downloadedSegment, localSegmentPath);
-    localLines.push(path.basename(trimmed));
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
   }
 
   const inputPath = path.join(tempDir, 'playlist.m3u8');
-  await writeFile(inputPath, localLines.join('\n'));
+  await writeFile(inputPath, playlist);
 
   return { inputPath, tempDir };
 }
@@ -101,7 +217,10 @@ function readHlsRenditions(metadata: unknown): string[] {
  * store a dedicated audio playlist, a legacy audio.m4a, or only muxed audio
  * inside a video rendition playlist.
  */
-async function resolveTranscriptionSourceKey(assetId: string, payloadStorageKey: string): Promise<string> {
+async function resolveTranscriptionSource(
+  assetId: string,
+  payloadStorageKey: string
+): Promise<{ key: string; durationSeconds: number | null }> {
   const asset = await getAssetById(assetId);
   if (!asset) {
     throw new Error(`Asset ${assetId} not found`);
@@ -131,7 +250,7 @@ async function resolveTranscriptionSourceKey(assetId: string, payloadStorageKey:
   for (const key of candidates) {
     if (await objectExists(bucket, key)) {
       log.info('extract-audio-source-resolved', { assetId, key });
-      return key;
+      return { key, durationSeconds: asset.durationSeconds ?? null };
     }
   }
 
@@ -180,8 +299,8 @@ export async function processExtractAudio(rawData: unknown): Promise<ExtractAudi
   let inputTempDir: string | undefined;
   let outputPath: string | undefined;
   try {
-    const resolvedStorageKey = await resolveTranscriptionSourceKey(assetId, storageKey);
-    const source = await resolveAudioSourcePath(videosBucket(), resolvedStorageKey);
+    const resolved = await resolveTranscriptionSource(assetId, storageKey);
+    const source = await resolveAudioSourcePath(videosBucket(), resolved.key);
     inputPath = source.inputPath;
     inputTempDir = source.tempDir;
 
@@ -190,7 +309,11 @@ export async function processExtractAudio(rawData: unknown): Promise<ExtractAudi
     outputPath = path.join(dir, `${mediaJobId}.mp3`);
 
     await throwIfCancelRequested(mediaJobId);
-    await transcodeToMp3(inputPath, outputPath);
+    await transcodeToMp3(
+      inputPath,
+      outputPath,
+      durationScaledTimeoutMs(resolved.durationSeconds, TRANSCODE_TIMEOUT_BASE_MS)
+    );
 
     const audioKey = `audio/${assetId}/${mediaJobId}.mp3`;
     await uploadFileToBucket(mediaBucket(), audioKey, outputPath, 'audio/mpeg', 'private, max-age=0');

@@ -14,7 +14,7 @@ import {
 } from '../../utils/storage';
 import { errorMessage, throwIfCancelRequested } from '../../utils/cancel';
 import { getStorageConfig } from '../../config/storage';
-import { ffmpegProbeLuma, ffmpegRun } from '../../utils/ffmpeg';
+import { FfmpegTimeoutError, durationScaledTimeoutMs, ffmpegProbeLuma, ffmpegRun } from '../../utils/ffmpeg';
 import { log } from '../../utils/logger';
 
 const STEP_KEY = 'generate-thumbnail';
@@ -34,6 +34,9 @@ const MAX_THUMBNAIL_BYTES = 500 * 1024;
  * top and step down only when a frame exceeds MAX_THUMBNAIL_BYTES.
  */
 const QSCALE_LADDER = [2, 5, 9, 15] as const;
+/** Base and ceiling for one frame extraction; accurate seek decodes up to the offset. */
+const FRAME_TIMEOUT_BASE_MS = 60_000;
+const FRAME_TIMEOUT_CAP_MS = 15 * 60_000;
 
 interface CandidateUpload {
   slot: Slot;
@@ -71,20 +74,25 @@ async function extractFrame(
   outputPath: string,
   qscale: number = QSCALE_LADDER[0]
 ): Promise<void> {
-  await ffmpegRun([
-    '-y',
-    '-i',
-    localPath,
-    '-ss',
-    String(atSeconds),
-    '-vframes',
-    '1',
-    '-vf',
-    "scale='min(1280,iw)':-2",
-    '-q:v',
-    String(qscale),
-    outputPath
-  ]);
+  // Offset 0 is a real offset, not an unknown duration, so it gets the base budget.
+  const timeoutMs = durationScaledTimeoutMs(Math.max(atSeconds, 0.001), FRAME_TIMEOUT_BASE_MS, FRAME_TIMEOUT_CAP_MS);
+  await ffmpegRun(
+    [
+      '-y',
+      '-i',
+      localPath,
+      '-ss',
+      String(atSeconds),
+      '-vframes',
+      '1',
+      '-vf',
+      "scale='min(1280,iw)':-2",
+      '-q:v',
+      String(qscale),
+      outputPath
+    ],
+    timeoutMs
+  );
 }
 
 /**
@@ -131,6 +139,8 @@ async function captureSlot(
       }
       log.warn('generate-thumbnail-black-frame', { slot, atSeconds: t, luma });
     } catch (error) {
+      // A killed ffmpeg would be killed again at the next offset; fail the job instead.
+      if (error instanceof FfmpegTimeoutError) throw error;
       log.warn('generate-thumbnail-slot-attempt-failed', {
         slot,
         atSeconds: t,
@@ -143,9 +153,13 @@ async function captureSlot(
   // still see what we produced, but flag it so the picker can warn.
   try {
     const buffer = await readFile(outputPath);
-    const luma = await ffmpegProbeLuma(outputPath).catch(() => 0);
+    const luma = await ffmpegProbeLuma(outputPath).catch((error: unknown) => {
+      if (error instanceof FfmpegTimeoutError) throw error;
+      return 0;
+    });
     return { buffer, meanLuma: luma, atSeconds: baseSeconds };
-  } catch {
+  } catch (error) {
+    if (error instanceof FfmpegTimeoutError) throw error;
     return null;
   }
 }
