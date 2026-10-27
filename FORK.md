@@ -62,7 +62,9 @@ and closes the pull request.
   `.github/fork/workflows.allow`, so a workflow added upstream cannot start running
   here unreviewed.
 - **build**: upstream's tests and build, and the API, dashboard and jobs images
-  built from `docker/Dockerfile.*` (not pushed).
+  built from `docker/Dockerfile.*` (not pushed). It also runs on every push to a
+  `wip/**` or `review/**` branch, so a patch is built and tested before its pull
+  request is opened.
 
 ## Images
 
