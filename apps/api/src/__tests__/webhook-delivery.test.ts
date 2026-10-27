@@ -8,6 +8,7 @@ vi.hoisted(() => {
   process.env.PRIVATE_SERVER_KEY = 'unit-test-server-key';
   process.env.PUBLIC_IS_SELFHOSTED = 'true';
   process.env.WEBHOOK_ALLOW_PRIVATE_NETWORKS = 'true';
+  process.env.WEBHOOK_ALLOWED_HOSTS = '127.0.0.1';
 });
 
 import { attemptWebhookDelivery } from '@cio/core/services/webhook/deliver';

@@ -89,7 +89,7 @@ export async function attemptWebhookDelivery(
       url: assertWebhookUrlShape(endpoint.payloadUrl, policy),
       body,
       headers,
-      verifySsl: endpoint.verifySsl,
+      verifySsl: policy.allowPrivateNetworks ? endpoint.verifySsl : true,
       policy
     });
   } catch (error) {
