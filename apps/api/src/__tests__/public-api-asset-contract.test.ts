@@ -22,6 +22,7 @@ describe('ZPublicApiCreateAsset', () => {
   it('rejects a mimeType outside the supported upload types', () => {
     expect(ZPublicApiCreateAsset.safeParse({ ...valid, mimeType: 'video/webm' }).success).toBe(false);
     expect(ZPublicApiCreateAsset.safeParse({ ...valid, mimeType: 'application/pdf' }).success).toBe(false);
+    expect(ZPublicApiCreateAsset.safeParse({ ...valid, mimeType: 'video/x-msvideo' }).success).toBe(false);
   });
 
   it('rejects a kind that has no upload path yet', () => {

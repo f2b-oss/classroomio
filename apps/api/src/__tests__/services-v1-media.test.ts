@@ -72,7 +72,6 @@ describe('createPublicApiAssetUploadService', () => {
 
   it.each([
     ['video/quicktime', 'mov'],
-    ['video/x-msvideo', 'avi'],
     ['video/x-matroska', 'mkv']
   ])('maps %s to a .%s key', async (mimeType, extension) => {
     await createPublicApiAssetUploadService(ORG_ID, ACTOR_ID, {

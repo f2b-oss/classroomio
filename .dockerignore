@@ -164,3 +164,6 @@ yarn.lock
 .graphqlrc
 .editorconfig
 .npmrc
+
+# Media fixtures for docker/jobs/check-image.sh, not part of any image
+docker/jobs/fixtures

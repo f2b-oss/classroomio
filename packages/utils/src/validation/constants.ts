@@ -8,7 +8,7 @@ import { FILE_UPLOAD_ALLOWED_MIME_TYPES } from '../file-upload';
  * These should match the constants in the API.
  */
 
-export const ALLOWED_CONTENT_TYPES = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'] as const;
+export const ALLOWED_CONTENT_TYPES = ['video/mp4', 'video/quicktime', 'video/x-matroska'] as const;
 
 export const ALLOWED_DOCUMENT_TYPES = FILE_UPLOAD_ALLOWED_MIME_TYPES;
 
