@@ -1,11 +1,17 @@
 # Build check: upstream's tests and build, and the three images, without
 # publishing anything. See FORK.md. Also dispatched by fork-sync.yml on sync/*
 # branches (see fork-guardrails.yml for why).
+#
+# Pushes to wip/** and review/** run it too, so a patch can be built and tested
+# in a private copy of this repository before a pull request is opened. Nothing
+# here needs pull request context, secrets or more than read access.
 name: Fork build
 
 on:
   pull_request:
     branches: [f2b]
+  push:
+    branches: ['wip/**', 'review/**']
   workflow_dispatch:
 
 permissions:
