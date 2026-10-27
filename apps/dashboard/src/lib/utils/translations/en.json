@@ -462,7 +462,9 @@
       "untitled_lesson": "Untitled lesson",
       "format": "Format"
     },
-    "back": "Back"
+    "back": "Back",
+    "source_code": "Source code",
+    "source_code_title": "Source code (AGPL-3.0)"
   },
   "compliance": {
     "title": "Compliance",

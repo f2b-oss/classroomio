@@ -37,7 +37,9 @@
         "caption": "Vi gør dine kurser, elever og indstillinger klar."
       }
     },
-    "back": "Tilbage"
+    "back": "Tilbage",
+    "source_code": "Kildekode",
+    "source_code_title": "Kildekode (AGPL-3.0)"
   },
   "validations": {
     "generic": {

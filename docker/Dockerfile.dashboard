@@ -32,6 +32,12 @@ ENV NODE_ENV=production \
     PORT=3000 \
     PUBLIC_IS_SELFHOSTED=true
 
+# AGPL-3.0 section 13: the app links users to the source of the build they are using.
+ARG SOURCE_CODE_URL=https://github.com/classroomio/classroomio
+ARG SOURCE_CODE_REVISION=
+ENV PUBLIC_SOURCE_CODE_URL=${SOURCE_CODE_URL} \
+    PUBLIC_SOURCE_CODE_REVISION=${SOURCE_CODE_REVISION}
+
 WORKDIR /app/apps/dashboard
 USER node
 CMD ["node", "build/index.js"]

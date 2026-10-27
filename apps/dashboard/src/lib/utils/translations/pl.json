@@ -37,7 +37,9 @@
         "caption": "Przygotowujemy Twoje kursy, uczniów i ustawienia."
       }
     },
-    "back": "Powrót"
+    "back": "Powrót",
+    "source_code": "Kod źródłowy",
+    "source_code_title": "Kod źródłowy (AGPL-3.0)"
   },
   "validations": {
     "generic": {

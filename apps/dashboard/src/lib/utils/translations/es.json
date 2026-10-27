@@ -37,7 +37,9 @@
         "caption": "Preparando tus cursos, estudiantes y configuración."
       }
     },
-    "back": "Atrás"
+    "back": "Atrás",
+    "source_code": "Código fuente",
+    "source_code_title": "Código fuente (AGPL-3.0)"
   },
   "validations": {
     "generic": {

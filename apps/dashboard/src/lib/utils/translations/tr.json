@@ -472,7 +472,9 @@
         "caption": "Kurslarınız, öğrencileriniz ve ayarlarınız hazırlanıyor."
       }
     },
-    "back": "Geri"
+    "back": "Geri",
+    "source_code": "Kaynak kodu",
+    "source_code_title": "Kaynak kodu (AGPL-3.0)"
   },
   "compliance": {
     "title": "Compliance",

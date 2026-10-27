@@ -37,7 +37,9 @@
         "caption": "Подготавливаем ваши курсы, студентов и настройки."
       }
     },
-    "back": "Назад"
+    "back": "Назад",
+    "source_code": "Исходный код",
+    "source_code_title": "Исходный код (AGPL-3.0)"
   },
   "validations": {
     "generic": {

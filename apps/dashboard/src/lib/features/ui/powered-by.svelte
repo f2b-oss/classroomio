@@ -6,6 +6,7 @@
   import { t } from '$lib/utils/functions/translations';
   import { currentOrg, isFreePlan } from '$lib/utils/store/org';
   import { cn } from '@cio/ui/tools';
+  import SourceCodeLink from './source-code-link.svelte';
 
   type Props = {
     /** Floating promo chip (landing / marketing) vs subdued sidebar attribution. */
@@ -43,6 +44,9 @@
     align={showOnlyLogo ? 'center' : 'start'}
     class={className}
   />
+  {#if !showOnlyLogo}
+    <SourceCodeLink class="px-2" />
+  {/if}
 {:else if $isFreePlan}
   <a
     href={`https://classroomio.com?utm_source=${$currentOrg.siteName}.${TENANT_ROOT_DOMAIN}`}

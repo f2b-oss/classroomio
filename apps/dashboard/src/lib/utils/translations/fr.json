@@ -37,7 +37,9 @@
         "caption": "Préparation de vos cours, étudiants et paramètres."
       }
     },
-    "back": "Retour"
+    "back": "Retour",
+    "source_code": "Code source",
+    "source_code_title": "Code source (AGPL-3.0)"
   },
   "validations": {
     "generic": {

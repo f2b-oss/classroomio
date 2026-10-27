@@ -37,7 +37,9 @@
         "caption": "आपके पाठ्यक्रम, छात्र और सेटिंग्स तैयार की जा रही हैं।"
       }
     },
-    "back": "वापस"
+    "back": "वापस",
+    "source_code": "सोर्स कोड",
+    "source_code_title": "सोर्स कोड (AGPL-3.0)"
   },
   "validations": {
     "generic": {
