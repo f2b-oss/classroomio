@@ -6,6 +6,7 @@ import { isPublicCorsPath, sessionCors } from '@api/middlewares/cors';
 import { randomBytes } from 'crypto';
 
 import { API_SERVER_URL } from '@api/constants';
+import { shouldDenyAuthPath } from '@api/utils/auth-route-guard';
 import {
   resolveOAuthBrowserOrigin,
   rewriteAuthRequestUrl,
@@ -165,6 +166,10 @@ export const app = new Hono()
           400
         );
       }
+    }
+
+    if (shouldDenyAuthPath(new URL(request.url).pathname)) {
+      return c.notFound();
     }
 
     const response = await auth.handler(request);

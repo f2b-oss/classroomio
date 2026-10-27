@@ -90,7 +90,10 @@ export const auth: ReturnType<typeof betterAuth> = betterAuth({
     }
   },
   account: {
-    storeAccountCookie: true
+    storeAccountCookie: true,
+    accountLinking: {
+      disableImplicitLinking: true
+    }
   },
   session: {
     expiresIn: 60 * 60 * 24 * 30, // 30 days
