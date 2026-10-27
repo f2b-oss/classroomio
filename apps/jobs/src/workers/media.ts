@@ -1,14 +1,20 @@
 import './../bootstrap';
 
-import { Worker } from 'bullmq';
+import { UnrecoverableError, Worker } from 'bullmq';
 
 import { recordDeadLetterJob, updateMediaJob } from '@cio/db/queries';
 import { JOB_NAMES, QUEUE_NAMES, createRedisConnection } from '@cio/jobs';
 
 import { JobCanceledError, errorMessage } from '../utils/cancel';
+import { FfmpegTimeoutError } from '../utils/ffmpeg';
 import { env } from '../config/env';
 import { log } from '../utils/logger';
-import { processExtractAudio, processGenerateThumbnail, processProbeMetadata } from '../processors/media';
+import {
+  HlsPlaylistRejectedError,
+  processExtractAudio,
+  processGenerateThumbnail,
+  processProbeMetadata
+} from '../processors/media';
 
 const concurrency = Number.parseInt(env.MEDIA_WORKER_CONCURRENCY ?? '2', 10) || 2;
 const connection = createRedisConnection();
@@ -52,15 +58,23 @@ worker.on('failed', async (job, err) => {
     error: errorMessage(err)
   });
 
-  const isFinalAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+  // BullMQ does not retry an UnrecoverableError (an ffmpeg timeout, for one), so it is final too.
+  const unrecoverable = err instanceof UnrecoverableError || err.name === 'UnrecoverableError';
+  const isFinalAttempt = unrecoverable || job.attemptsMade >= (job.opts.attempts ?? 1);
   if (!isFinalAttempt) return;
+  const code =
+    err instanceof FfmpegTimeoutError
+      ? 'FFMPEG_TIMEOUT'
+      : err instanceof HlsPlaylistRejectedError
+        ? 'HLS_PLAYLIST_REJECTED'
+        : 'WORKER_EXHAUSTED_RETRIES';
 
   const data = job.data as { mediaJobId?: string; assetId?: string; actorContext?: { organizationId?: string } };
   if (data?.mediaJobId) {
     await updateMediaJob(data.mediaJobId, {
       status: 'failed',
       stage: 'failed',
-      error: { code: 'WORKER_EXHAUSTED_RETRIES', message: errorMessage(err) }
+      error: { code, message: errorMessage(err) }
     });
   }
 
@@ -72,7 +86,7 @@ worker.on('failed', async (job, err) => {
     jobName: job.name,
     bullmqJobId: job.id ?? null,
     payload: job.data as Record<string, unknown>,
-    error: { code: 'WORKER_EXHAUSTED_RETRIES', message: errorMessage(err), stack: err.stack },
+    error: { code, message: errorMessage(err), stack: err.stack },
     attempts: job.attemptsMade
   });
 });

@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { UnrecoverableError } from 'bullmq';
+
 import { log } from './logger';
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +26,66 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  * read anything it was not handed.
  */
 const PROTOCOL_ALLOWLIST = ['-protocol_whitelist', 'file'];
+
+/**
+ * Wall-clock budgets for each kind of invocation. A valid but pathological
+ * upload (a huge frame size, a long high-bitrate stream) can otherwise keep a
+ * subprocess and a worker slot busy indefinitely. When a budget runs out the
+ * child is SIGKILLed: ffmpeg traps SIGTERM to finish writing its output, which
+ * is the opposite of what is wanted here.
+ */
+export const FFMPEG_TIMEOUTS_MS = {
+  /** `ffprobe` of a whole upload; reads headers, not frames. */
+  probe: 30_000,
+  /** Luma of a single already-extracted JPEG. */
+  luma: 30_000,
+  /** Default for `ffmpegRun` when the caller passes no budget. */
+  run: 60_000
+} as const;
+
+/** Upper bound for any duration-scaled budget, however long the source claims to be. */
+export const FFMPEG_MAX_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Budget for work that has to decode the source up to some point: `baseMs`
+ * plus half a second per second of media, capped at `capMs`. Unknown or
+ * invalid durations get the cap.
+ */
+export function durationScaledTimeoutMs(
+  durationSeconds: number | null | undefined,
+  baseMs: number,
+  capMs: number = FFMPEG_MAX_TIMEOUT_MS
+): number {
+  if (typeof durationSeconds !== 'number' || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return capMs;
+  }
+  return Math.min(capMs, Math.ceil(baseMs + durationSeconds * 500));
+}
+
+/**
+ * The subprocess ran out of its budget. Retrying would spend the same budget
+ * on the same input, so this is unrecoverable: BullMQ fails the job without
+ * further attempts. The name is BullMQ's, which it matches on.
+ */
+export class FfmpegTimeoutError extends UnrecoverableError {
+  constructor(
+    public readonly bin: string,
+    public readonly timeoutMs: number
+  ) {
+    super(`${bin} killed after exceeding its ${timeoutMs} ms time budget`);
+    this.name = 'UnrecoverableError';
+  }
+}
+
+function execOptions(timeoutMs: number) {
+  return { maxBuffer: MAX_OUTPUT_BYTES, timeout: timeoutMs, killSignal: 'SIGKILL' as const };
+}
+
+/** True when `execFile` killed the child because `timeout` elapsed. */
+function isTimeoutKill(error: unknown): boolean {
+  const err = error as { killed?: boolean; signal?: string | null; code?: unknown };
+  return err?.killed === true && err.signal === 'SIGKILL' && err.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+}
 
 /** Full argv for an ffmpeg run: the protocol allowlist, then `args`. */
 export function ffmpegArgs(args: string[]): string[] {
@@ -61,9 +123,12 @@ export interface FfprobeData {
  */
 export async function ffprobeJson(localPath: string): Promise<FfprobeData> {
   try {
-    const { stdout } = await execFileAsync(FFPROBE_BIN, ffprobeArgs(localPath), { maxBuffer: MAX_OUTPUT_BYTES });
+    const { stdout } = await execFileAsync(FFPROBE_BIN, ffprobeArgs(localPath), execOptions(FFMPEG_TIMEOUTS_MS.probe));
     return JSON.parse(stdout) as FfprobeData;
   } catch (error) {
+    if (isTimeoutKill(error)) {
+      throw new FfmpegTimeoutError(FFPROBE_BIN, FFMPEG_TIMEOUTS_MS.probe);
+    }
     const err = error as Error & { code?: string };
     if (err.code === 'ENOENT') {
       throw new Error(
@@ -78,12 +143,16 @@ export async function ffprobeJson(localPath: string): Promise<FfprobeData> {
 /**
  * Spawn ffmpeg with the supplied argv. Captures stderr and surfaces a useful
  * tail in the error message when ffmpeg exits non-zero, since ffmpeg writes
- * progress and diagnostics to stderr by default.
+ * progress and diagnostics to stderr by default. The child is killed after
+ * `timeoutMs` and the call throws `FfmpegTimeoutError`.
  */
-export async function ffmpegRun(args: string[]): Promise<void> {
+export async function ffmpegRun(args: string[], timeoutMs: number = FFMPEG_TIMEOUTS_MS.run): Promise<void> {
   try {
-    await execFileAsync(FFMPEG_BIN, ffmpegArgs(args), { maxBuffer: MAX_OUTPUT_BYTES });
+    await execFileAsync(FFMPEG_BIN, ffmpegArgs(args), execOptions(timeoutMs));
   } catch (error) {
+    if (isTimeoutKill(error)) {
+      throw new FfmpegTimeoutError(FFMPEG_BIN, timeoutMs);
+    }
     const err = error as Error & { stderr?: string | Buffer; code?: string };
     if (err.code === 'ENOENT') {
       throw new Error(
@@ -139,10 +208,13 @@ export async function ffmpegProbeLuma(filePath: string): Promise<number> {
   ]);
   let stderr = '';
   try {
-    const result = await execFileAsync(FFMPEG_BIN, args, { maxBuffer: MAX_OUTPUT_BYTES });
+    const result = await execFileAsync(FFMPEG_BIN, args, execOptions(FFMPEG_TIMEOUTS_MS.luma));
     const raw = result.stderr as string | Buffer | undefined;
     stderr = typeof raw === 'string' ? raw : (raw?.toString('utf8') ?? '');
   } catch (error) {
+    if (isTimeoutKill(error)) {
+      throw new FfmpegTimeoutError(FFMPEG_BIN, FFMPEG_TIMEOUTS_MS.luma);
+    }
     const err = error as Error & { stderr?: string | Buffer; code?: string };
     if (err.code === 'ENOENT') {
       throw new Error(
@@ -191,7 +263,7 @@ export async function warnIfFfmpegMissing(): Promise<void> {
 
 async function isExecutable(bin: string): Promise<boolean> {
   try {
-    await execFileAsync(bin, ['-version'], { maxBuffer: MAX_OUTPUT_BYTES });
+    await execFileAsync(bin, ['-version'], execOptions(FFMPEG_TIMEOUTS_MS.probe));
     return true;
   } catch {
     return false;

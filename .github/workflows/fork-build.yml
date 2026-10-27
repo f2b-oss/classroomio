@@ -92,6 +92,20 @@ jobs:
       - name: api runs database setup and serves as the runtime user
         if: matrix.component == 'api'
         run: docker/api/check-startup.sh fork-build/api:check
+      # Negative control: the same image with corepack's prepared pnpm out of
+      # reach (it cannot download one: COREPACK_ENABLE_NETWORK=0 and no route
+      # out) must fail the startup check, or the check proves nothing.
+      - name: startup check fails on an api image without its pnpm
+        if: matrix.component == 'api'
+        run: |
+          cid="$(docker create fork-build/api:check)"
+          docker commit --change 'ENV COREPACK_HOME=/tmp/corepack-empty' "$cid" fork-build/api:broken >/dev/null
+          docker rm "$cid" >/dev/null
+          if docker/api/check-startup.sh fork-build/api:broken 60; then
+            echo "FAIL check-startup.sh passed on an image that cannot run pnpm"
+            exit 1
+          fi
+          echo "ok   check-startup.sh rejected the broken image"
       - name: FFmpeg build and media steps
         if: matrix.component == 'jobs'
         run: docker/jobs/check-image.sh fork-build/jobs:check
