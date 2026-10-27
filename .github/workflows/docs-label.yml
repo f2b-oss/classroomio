@@ -115,3 +115,4 @@ jobs:
             } catch (error) {
               core.warning(`docs-label failed to update label/comment: ${error.message}`);
             }
+# access-check f2b-agents FG-1412: scratch edit, branch will be deleted
