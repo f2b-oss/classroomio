@@ -153,8 +153,7 @@ export type TInitHlsAsset = z.infer<typeof ZInitHlsAsset>;
  * The server returns presigned PUT URLs keyed by the same relative path.
  */
 export const ZBatchPresignHls = z.object({
-  paths: z.array(z.string().min(1).max(256)).min(1).max(2000),
-  contentTypeByExtension: z.record(z.string().regex(/^\.[a-z0-9]+$/), z.string().min(1)).optional()
+  paths: z.array(z.string().min(1).max(256)).min(1).max(2000)
 });
 export type TBatchPresignHls = z.infer<typeof ZBatchPresignHls>;
 
