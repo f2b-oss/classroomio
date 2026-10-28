@@ -1244,6 +1244,8 @@ If a Standard Webhooks receiver rejects the signature for a webhook created befo
 ## Security
 
 - Payload URLs must use HTTPS. On cloud, URLs that point to localhost or private network addresses are rejected, and the destination is checked again at delivery time.
+- The payload URL's host must be listed in `WEBHOOK_ALLOWED_HOSTS` on the API and jobs services (comma-separated, matched exactly: `hooks.example.com` does not allow `api.hooks.example.com`). When it is unset or empty, every payload URL is rejected and no webhook is sent. The list is checked when a webhook is created or updated and again on every delivery, so removing a host stops deliveries to existing webhooks.
+- TLS certificates are always verified. The **Verify SSL** setting is honoured only when `WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`.
 - Stored response bodies are truncated and sensitive values such as tokens and API keys are redacted.
 - **Regenerate secret** replaces the signing secret immediately. The old secret stops working.
 - Self-hosted installs can allow private-network and plain `http` destinations by setting `WEBHOOK_ALLOW_PRIVATE_NETWORKS=true` on the API and jobs services.
