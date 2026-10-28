@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +7,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   playlist: '',
   downloads: [] as string[],
+  /** `maxBytes` passed with each download, in order. */
+  maxBytes: [] as (number | undefined)[],
+  /** Size to give a downloaded object, by key (sparse, so large sizes cost nothing). */
+  sizes: new Map<string, number>(),
   ffmpegRun: vi.fn(),
   readFile: vi.fn()
 }));
@@ -44,12 +48,17 @@ vi.mock('../../utils/storage', () => ({
   objectExists: vi.fn(async () => true),
   safeUnlink: vi.fn(async () => undefined),
   uploadFileToBucket: vi.fn(async () => undefined),
-  downloadObjectToTempFile: vi.fn(async (_bucket: string, key: string, name: string) => {
-    mocks.downloads.push(key);
-    const file = path.join(tmpdir(), `extract-audio-hls-test-${process.pid}-${mocks.downloads.length}-${name}`);
-    await writeFile(file, key.endsWith('.m3u8') ? mocks.playlist : 'segment');
-    return file;
-  })
+  downloadObjectToTempFile: vi.fn(
+    async (_bucket: string, key: string, name: string, options?: { maxBytes?: number }) => {
+      mocks.downloads.push(key);
+      mocks.maxBytes.push(options?.maxBytes);
+      const file = path.join(tmpdir(), `extract-audio-hls-test-${process.pid}-${mocks.downloads.length}-${name}`);
+      await writeFile(file, key.endsWith('.m3u8') ? mocks.playlist : 'segment');
+      const size = mocks.sizes.get(key);
+      if (size !== undefined) await truncate(file, size);
+      return file;
+    }
+  )
 }));
 
 vi.mock('../../utils/ffmpeg', async (importOriginal) => ({
@@ -59,7 +68,13 @@ vi.mock('../../utils/ffmpeg', async (importOriginal) => ({
 
 import { UnrecoverableError } from 'bullmq';
 
-import { HLS_MAX_PLAYLIST_BYTES, HLS_MAX_SEGMENTS, processExtractAudio } from './extract-audio';
+import {
+  HLS_MAX_PLAYLIST_BYTES,
+  HLS_MAX_SEGMENT_BYTES,
+  HLS_MAX_SEGMENTS,
+  HLS_MAX_TOTAL_SEGMENT_BYTES,
+  processExtractAudio
+} from './extract-audio';
 
 const ASSET_ID = '11111111-1111-4111-8111-111111111111';
 const payload = {
@@ -76,6 +91,8 @@ function playlist(...body: string[]): string {
 describe('extract-audio HLS playlist handling', () => {
   beforeEach(() => {
     mocks.downloads.length = 0;
+    mocks.maxBytes.length = 0;
+    mocks.sizes.clear();
     mocks.ffmpegRun.mockReset();
     mocks.readFile.mockClear();
     mocks.ffmpegRun.mockImplementation(async (args: string[]) => {
@@ -224,4 +241,68 @@ describe('extract-audio HLS playlist handling', () => {
     expect(error.message).not.toMatch(/[\u0000-\u001f]/);
     expect(error.message).toContain('\\"');
   });
+
+  const segmentKey = (n: number) => `${ASSET_ID}/audio/seg-${String(n).padStart(5, '0')}.ts`;
+  const fourSecondSegments = (count: number) =>
+    Array.from({ length: count }, (_, i) => ['#EXTINF:4.0,', `seg-${String(i + 1).padStart(5, '0')}.ts`]).flat();
+  const FIT = Math.floor(HLS_MAX_TOTAL_SEGMENT_BYTES / HLS_MAX_SEGMENT_BYTES);
+
+  it('caps each segment download and rejects a segment over the cap', async () => {
+    mocks.playlist = playlist(...fourSecondSegments(3));
+    mocks.sizes.set(segmentKey(2), HLS_MAX_SEGMENT_BYTES + 1);
+
+    const error = await processExtractAudio(payload).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect((error as Error).message).toBe(`HLS segment "seg-00002.ts" is larger than ${HLS_MAX_SEGMENT_BYTES} bytes`);
+    expect(mocks.maxBytes.slice(1)).toEqual([HLS_MAX_SEGMENT_BYTES, HLS_MAX_SEGMENT_BYTES]);
+    expect(mocks.downloads).toHaveLength(3);
+    expect(mocks.ffmpegRun).not.toHaveBeenCalled();
+  });
+
+  it('turns an over-cap segment download into a rejected playlist', async () => {
+    const storage = await import('../../utils/storage');
+    mocks.playlist = playlist(...fourSecondSegments(2));
+    const download = vi.mocked(storage.downloadObjectToTempFile);
+    const real = download.getMockImplementation()!;
+    download.mockImplementationOnce(real).mockRejectedValueOnce(new storage.ObjectTooLargeError('too large'));
+
+    const error = await processExtractAudio(payload).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect((error as Error).message).toBe(`HLS segment "seg-00001.ts" is larger than ${HLS_MAX_SEGMENT_BYTES} bytes`);
+    expect(mocks.ffmpegRun).not.toHaveBeenCalled();
+  });
+
+  it('stops downloading once the segments reach the total byte budget', async () => {
+    mocks.playlist = playlist(...fourSecondSegments(FIT + 5));
+    for (let n = 1; n <= FIT + 5; n++) mocks.sizes.set(segmentKey(n), HLS_MAX_SEGMENT_BYTES);
+
+    const error = await processExtractAudio(payload).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect((error as Error).message).toBe(`HLS segments total more than ${HLS_MAX_TOTAL_SEGMENT_BYTES} bytes`);
+    // The playlist plus exactly the segments that fit; nothing past the budget is fetched.
+    expect(mocks.downloads).toHaveLength(1 + FIT);
+    expect(mocks.ffmpegRun).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('limits the last segment download to what is left of the budget', async () => {
+    mocks.playlist = playlist(...fourSecondSegments(FIT + 1));
+    for (let n = 2; n <= FIT; n++) mocks.sizes.set(segmentKey(n), HLS_MAX_SEGMENT_BYTES);
+    mocks.sizes.set(segmentKey(1), HLS_MAX_SEGMENT_BYTES - 1024);
+    mocks.sizes.set(segmentKey(FIT + 1), 2048);
+
+    const error = await processExtractAudio(payload).catch((e: unknown) => e);
+    expect(mocks.maxBytes.at(-2)).toBe(HLS_MAX_SEGMENT_BYTES);
+    expect(mocks.maxBytes.at(-1)).toBe(1024);
+    expect((error as Error).message).toBe(
+      `HLS segment "seg-${String(FIT + 1).padStart(5, '0')}.ts" is larger than 1024 bytes`
+    );
+  }, 60_000);
+
+  it('accepts segments that fill the budget exactly', async () => {
+    mocks.playlist = playlist(...fourSecondSegments(FIT));
+    for (let n = 1; n <= FIT; n++) mocks.sizes.set(segmentKey(n), HLS_MAX_SEGMENT_BYTES);
+
+    await processExtractAudio(payload);
+    expect(mocks.ffmpegRun).toHaveBeenCalledTimes(1);
+  }, 60_000);
 });
