@@ -1296,12 +1296,24 @@ const HLS_CONTENT_TYPES: Record<string, string> = {
   '.png': 'image/png'
 };
 
-function contentTypeFor(path: string, overrides?: Record<string, string>): string {
+/**
+ * The Content-Type signed into an upload, from the server's map only. S3 stores
+ * it and serves it back on presigned GETs (and an R2 Worker passes it through),
+ * so a caller must not be able to choose it: a path with any other extension,
+ * or none, is refused.
+ */
+function contentTypeFor(path: string): string {
   const dotIndex = path.lastIndexOf('.');
-  if (dotIndex === -1) return 'application/octet-stream';
-
-  const ext = path.slice(dotIndex).toLowerCase();
-  return overrides?.[ext] ?? HLS_CONTENT_TYPES[ext] ?? 'application/octet-stream';
+  const ext = dotIndex === -1 || path.lastIndexOf('/') > dotIndex ? '' : path.slice(dotIndex).toLowerCase();
+  const contentType = HLS_CONTENT_TYPES[ext];
+  if (!contentType) {
+    throw new AppError(
+      `Unsupported HLS upload file type: ${JSON.stringify(ext || path.slice(-64))}`,
+      ErrorCodes.VALIDATION_ERROR,
+      400
+    );
+  }
+  return contentType;
 }
 
 export async function initHlsAssetService(orgId: string, profileId: string, data: TInitHlsAsset) {
@@ -1352,15 +1364,16 @@ export async function batchPresignHlsService(
         throw new AppError(`Invalid path: ${relativePath}`, ErrorCodes.VALIDATION_ERROR, 400);
       }
     }
+    // Resolve every type before signing anything, so one bad path refuses the whole batch.
+    const contentTypes = data.paths.map(contentTypeFor);
 
     // Sign all paths in parallel — sequential getSignedUrl calls for a
     // 5-minute video produce ~225 segments × ~5ms each = >1s of needless
     // serialised RTT before the encoder can start uploading anything.
     const results = await Promise.all(
-      data.paths.map(async (relativePath) => {
+      data.paths.map(async (relativePath, i) => {
         const fileKey = `${prefix}${relativePath}`;
-        const contentType = contentTypeFor(relativePath, data.contentTypeByExtension);
-        const url = await generateUploadPresignedUrl(fileKey, config.bucketVideos, contentType);
+        const url = await generateUploadPresignedUrl(fileKey, config.bucketVideos, contentTypes[i]);
         return { relativePath, fileKey, url };
       })
     );
