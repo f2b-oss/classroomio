@@ -94,6 +94,20 @@ export const HLS_MAX_SEGMENTS = 20_000;
  */
 export const HLS_MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Largest single segment the worker will download. Our encoders write 4 s
+ * segments; at the 1080p rung's 5 Mbps ceiling that is about 2.5 MB.
+ */
+export const HLS_MAX_SEGMENT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Most bytes of segments one playlist may make the worker write to local temp.
+ * Nothing caps segment uploads by size, so without this a playlist of
+ * `HLS_MAX_SEGMENTS` large objects could fill the disk. Well above a rendition
+ * of the largest video we accept for upload.
+ */
+export const HLS_MAX_TOTAL_SEGMENT_BYTES = 2 * 1024 * 1024 * 1024;
+
 /** Longest piece of playlist text quoted in an error message. */
 const HLS_ERROR_QUOTE_CHARS = 120;
 
@@ -219,9 +233,28 @@ async function downloadHlsPlaylistToTempFile(
   await mkdir(tempDir, { recursive: true });
 
   try {
+    let totalBytes = 0;
     for (const segment of segments) {
-      const downloadedSegment = await downloadObjectToTempFile(bucket, segment.key, segment.localName);
-      await rename(downloadedSegment, path.join(tempDir, segment.localName));
+      const remaining = HLS_MAX_TOTAL_SEGMENT_BYTES - totalBytes;
+      if (remaining <= 0) {
+        throw new HlsPlaylistRejectedError(`HLS segments total more than ${HLS_MAX_TOTAL_SEGMENT_BYTES} bytes`);
+      }
+      // Each download stops at the smaller of the per-segment cap and what is left of the budget.
+      const maxBytes = Math.min(HLS_MAX_SEGMENT_BYTES, remaining);
+      const segmentTooLarge = () =>
+        new HlsPlaylistRejectedError(`HLS segment ${quote(segment.localName)} is larger than ${maxBytes} bytes`);
+      const downloadedSegment = await downloadObjectToTempFile(bucket, segment.key, segment.localName, {
+        maxBytes
+      }).catch((error: unknown) => {
+        throw error instanceof ObjectTooLargeError ? segmentTooLarge() : error;
+      });
+      const localPath = path.join(tempDir, segment.localName);
+      await rename(downloadedSegment, localPath);
+      const { size } = await stat(localPath);
+      if (size > maxBytes) {
+        throw segmentTooLarge();
+      }
+      totalBytes += size;
     }
   } catch (error) {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
