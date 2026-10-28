@@ -255,15 +255,19 @@ async function handleHlsRequest(request: Request, env: Env): Promise<Response> {
   if (!object) return new Response('Not Found', { status: 404 });
 
   const headers = new Headers();
+  if ('writeHttpMetadata' in object) {
+    object.writeHttpMetadata(headers);
+  }
+  // Set after the stored metadata so it cannot override them: the stored
+  // Content-Type is whatever the uploader's presigned PUT carried, and this is
+  // served on the tenant's own origin.
   headers.set('Content-Type', contentTypeFor(relativePath));
+  headers.set('X-Content-Type-Options', 'nosniff');
   // Only `master.m3u8` is mutable — it gets patched when a p1080 rendition is
   // added later, so it stays short-lived. Variant/media playlists and segments
   // are write-once per assetId/path and never change, so cache them immutably.
   const isMutableManifest = relativePath === 'master.m3u8';
   headers.set('Cache-Control', isMutableManifest ? 'private, max-age=10' : 'private, max-age=31536000, immutable');
-  if ('writeHttpMetadata' in object) {
-    object.writeHttpMetadata(headers);
-  }
   if (object.size != null) headers.set('Content-Length', String(object.size));
 
   if (request.method === 'HEAD') {
